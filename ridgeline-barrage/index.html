@@ -462,7 +462,7 @@ let tanks=[],me=null,turn=0,wind=0,sel='pea',fuel=FUEL,driveDir=0,driveAcc=0;
 let projs=[],fires=[],holes=[],timers=[],fx=[],parts=[],beams=[],floaters=[];
 let shake=0,aiTimer=0,aiPlanRes=null,current=null,resolveTimer=0,resolveAge=0,aiming=false;
 let shopCtx='browse',shopBuys={};
-let lastShot=null; /* your previous shot: path, landing point, angle and power */
+let lastShot=null,spentThisLevel={}; /* your previous shot: path, landing point, angle and power */
 
 const ENEMY=[{n:'Rook',c:'#d95d5d'},{n:'Mortimer',c:'#5fa8d9'},{n:'Gravel',c:'#a0d95f'},{n:'Duchess',c:'#d97fd0'},{n:'Clank',c:'#5fd9c2'},{n:'Bramble',c:'#d9a05f'}];
 const SLOT=['#f2b84b','#d95d5d','#5fa8d9','#a0d95f','#d97fd0','#5fd9c2'];
@@ -646,7 +646,7 @@ function fire(t,wid){
 function playerFire(){
   if(state!=='aim'||!me)return;audio();
   const w=sel;
-  if(w!=='pea'){if(!(save.inv[w]>0)){sel='pea';renderWeapons();return;}save.inv[w]--;if(save.inv[w]<=0)delete save.inv[w];persist();}
+  if(w!=='pea'){if(!(save.inv[w]>0)){sel='pea';renderWeapons();return;}save.inv[w]--;if(save.inv[w]<=0)delete save.inv[w];if(mode==='solo')spentThisLevel[w]=(spentThisLevel[w]||0)+1;persist();}
   if(!save.inv[sel])sel='pea';
   if(mode==='mp')mpFire(w);else{grng=Math.random;fire(me,w);}
   renderWeapons();
@@ -669,11 +669,13 @@ function postResolve(){
 
 /* ---------- solo campaign ---------- */
 function enemyWeapon(){
-  const L=save.level;let pool=['pea','pea','pea'];
-  if(L>=2)pool.push('bertha','bouncer');
-  if(L>=3)pool.push('cluster','popcorn');
-  if(L>=4)pool.push('napalm','fireworks','bertha');
-  if(L>=6)pool.push('mountain','meteor','lightning');
+  const L=save.level;if(L<2)return 'pea';
+  const chance=Math.min(.25,.06+(L-2)*.025); /* level 2: 6%, level 6: 16%, capped at 25% */
+  if(Math.random()>=chance)return 'pea';
+  const pool=['bertha','bouncer'];
+  if(L>=4)pool.push('cluster','popcorn');
+  if(L>=6)pool.push('napalm','fireworks');
+  if(L>=9)pool.push('mountain','meteor');
   return pool[(Math.random()*pool.length)|0];
 }
 function simulate(t,ang,pw,target){
@@ -714,7 +716,7 @@ function clearFx(){projs=[];fires=[];holes=[];timers=[];fx=[];parts=[];beams=[];
 function startLevel(){
   mode='solo';hideAll();
   genTerrain(save.level-1);buildBg();placeSolo();settleAdd(0,W-1);
-  sel=save.inv[sel]>0?sel:'pea';clearFx();lastShot=null;
+  sel=save.inv[sel]>0?sel:'pea';clearFx();lastShot=null;spentThisLevel={};viewSnap=true;
   levelStartPoints=save.points;levelKills=0;turn=0;wind=windValue(save.wind);state='aim';fuel=FUEL;
   renderWeapons();syncControls();hud();
 }
@@ -725,10 +727,12 @@ function levelClear(){
   openShop('between',`Level ${lvl} cleared`,`<span>Earned this level <b>${save.points-levelStartPoints}</b></span><span>Clear bonus <b>${bonus}</b></span><span>Health bonus <b>${hpb}</b></span><span>Kills <b>${levelKills}</b></span>`);
 }
 function gameOver(){
-  state='over';if(save.score>save.best)save.best=save.score;persist();
+  state='over';
+  let back=0;for(const [w,n] of Object.entries(spentThisLevel)){save.inv[w]=(save.inv[w]||0)+n;back+=n;}spentThisLevel={};
+  if(save.score>save.best)save.best=save.score;persist();renderWeapons();
   const earned=save.points-levelStartPoints;
   $('#overEyebrow').textContent=`Level ${save.level}`;
-  $('#overText').textContent=`You keep the ${earned.toLocaleString()} points you earned this level, and every shell still in your armory. Spend them, then try level ${save.level} again.`;
+  $('#overText').textContent=`You keep the ${earned.toLocaleString()} points you earned this level`+(back?`, and the ${back} special shell${back>1?'s':''} you fired ${back>1?'are':'is'} back in your armory`:'')+`. Spend your points if you like, then try level ${save.level} again.`;
   $('#overSummary').innerHTML=`<span>Points to spend <b>${save.points.toLocaleString()}</b></span><span>Kills this level <b>${levelKills}</b></span><span>Total score <b>${save.score.toLocaleString()}</b></span><span>Best score <b>${save.best.toLocaleString()}</b></span>`;
   $('#retryBtn').textContent=`Retry level ${save.level}`;
   hideAll();$('#ovOver').hidden=false;hud();
@@ -853,7 +857,7 @@ function onGameDoc(snap){
 function setupMatch(d){
   mode='mp';hideAll();clearFx();
   tanks=d.players.map((uid,i)=>{const t=makeTank(100,SLOT[i%SLOT.length],nameOf(uid,i));t.uid=uid;return t;});
-  me=tanks.find(t=>t.uid===myId)||null;if(me)me.name='You';lastShot=null;
+  me=tanks.find(t=>t.uid===myId)||null;if(me)me.name='You';lastShot=null;viewSnap=true;
   setPalette(d.palette||0);buildBg();resolveNames(d.players.filter(u=>u!==myId));
   sel=save.inv[sel]>0?sel:'pea';renderWeapons();
 }
@@ -1061,12 +1065,25 @@ setInterval(()=>{if(mode==='mp')hud();},1000);
 
 /* ---------- sizing ---------- */
 /* the canvas fills the whole stage; the battlefield is fitted inside it (clear of side insets) and the sky/ground extend into the rest */
-let K=1,DPR=1,OX=0,OY=0,CW=1,CH=1;
+let K=1,DPR=1,OX=0,OY=0,CW=1,CH=1,VIL=0,VAW=1,viewSnap=true,viewY0=0;
+/* Fill the width. If the area is wider than the battlefield, trim empty sky and deep ground,
+   but always keep every tank (and room for its label) in view; only shrink if the tanks are spread too far vertically. */
+function layoutView(el){
+  const ah=CH,aw=VAW;let k=aw/W,vh=ah/k,y0;
+  if(vh>=H){y0=H-vh;}
+  else{let top=H*.18,bot=H*.92;const live=tanks.filter(t=>t.alive&&t.y<H);
+    if(live.length){top=Math.min(...live.map(t=>t.y-46));bot=Math.max(...live.map(t=>t.y+16));}
+    top=Math.max(0,top);bot=Math.min(H,Math.max(bot,top+40));
+    if(bot-top>vh){k=ah/(bot-top);vh=ah/k;}
+    y0=Math.min(H-vh,top);if(y0+vh<bot)y0=bot-vh;y0=Math.max(Math.min(0,H-vh),y0);}
+  if(viewSnap||!el){K=k;viewY0=y0;viewSnap=false;}
+  else{const a=1-Math.exp(-el*4);K+=(k-K)*a;viewY0+=(y0-viewY0)*a;}
+  OX=VIL+(aw-W*K)/2;OY=-viewY0*K;
+}
 function resize(){const st=$('#stage');CW=Math.max(1,st.clientWidth);CH=Math.max(1,st.clientHeight);
   const pc=getComputedStyle($('#insetProbe'));const il=parseFloat(pc.paddingLeft)||0,ir=parseFloat(pc.paddingRight)||0;
-  const aw=Math.max(50,CW-il-ir),ah=CH;
-  if(aw/ah<=W/H){K=aw/W;OX=il;OY=ah-H*K;}else{K=ah/H;OY=0;OX=il+(aw-W*K)/2;}
-  DPR=Math.min(2.5,window.devicePixelRatio||1);
+  VIL=il;VAW=Math.max(50,CW-il-ir);
+  DPR=Math.min(2.5,window.devicePixelRatio||1);viewSnap=true;layoutView(0);
   cv.style.width=CW+'px';cv.style.height=CH+'px';cv.width=Math.round(CW*DPR);cv.height=Math.round(CH*DPR);}
 new ResizeObserver(resize).observe($('#stage'));window.addEventListener('resize',resize);
 
@@ -1108,7 +1125,7 @@ function frame(ts){
   const paused=mode==='solo'&&(!$('#ovMenu').hidden||!$('#ovShop').hidden);
   if(!paused&&['aim','ai','resolve','wait'].includes(state)){while(acc>=DT&&n<25){step(DT);acc-=DT;n++;}if(n>=25)acc=0;frameUpdate(el);settleStep();if(fastNow){settleStep();settleStep();}}
   else acc=0;
-  flush();draw();requestAnimationFrame(frame);
+  flush();draw(raw);requestAnimationFrame(frame);
 }
 
 /* ---------- drawing ---------- */
@@ -1129,7 +1146,8 @@ function drawTank(t,active){
   const label=t===me?'YOU':String(t.name||'').slice(0,16);ctx.fillText(label,t.x,by-4);
   if(active){const bob=Math.sin(performance.now()/180)*2;ctx.fillStyle=t===me?'#f2b84b':'#ede6d3';ctx.beginPath();ctx.moveTo(t.x-5,by-22+bob);ctx.lineTo(t.x+5,by-22+bob);ctx.lineTo(t.x,by-15+bob);ctx.closePath();ctx.fill();}
 }
-function draw(){
+function draw(dt){
+  layoutView(dt||0);
   ctx.setTransform(1,0,0,1,0,0);
   const top=ctx.createLinearGradient(0,0,0,Math.max(1,OY*DPR));top.addColorStop(0,'#0a1024');top.addColorStop(1,'#141d38');
   ctx.fillStyle=top;ctx.fillRect(0,0,cv.width,cv.height);
